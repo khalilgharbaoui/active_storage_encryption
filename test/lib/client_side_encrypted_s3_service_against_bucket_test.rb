@@ -35,8 +35,17 @@ class ActiveStorageEncryption::ClientSideEncryptedS3ServiceAgainstBucketTest < A
       region: ENV.fetch("S3_REGION", "auto"),
       bucket: ENV.fetch("S3_BUCKET")
     }.tap do |options|
-      # R2 and other S3-compatible providers need the endpoint named, and path style addressing
-      options.merge!(endpoint: ENV["S3_ENDPOINT"], force_path_style: true) if ENV["S3_ENDPOINT"].present?
+      next if ENV["S3_ENDPOINT"].blank?
+
+      # S3-compatible providers need the endpoint named, and path style addressing. The checksum
+      # settings are there because R2 refuses the CRC32 checksum aws-sdk-s3 sends by default
+      # ("You can only specify one non-default checksum at a time").
+      options.merge!(
+        endpoint: ENV["S3_ENDPOINT"],
+        force_path_style: true,
+        request_checksum_calculation: "when_required",
+        response_checksum_validation: "when_required"
+      )
     end
   end
 
