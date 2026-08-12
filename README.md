@@ -76,7 +76,9 @@ It's way more work, and way more hassle. This is great for sensitive files, and 
 
 ## What this gem _cannot_ do
 
-This gem does not provide an E2E encrypted solution. The file still gets encrypted by your cloud provider, and decrypted by your cloud provider. While it offers a strong protection _at rest_ it does not offer extra protection _in transit._ If you need that level of protection, you may want to look into [S3 client encryption](https://ankane.org/activestorage-s3-encryption) or other similar tech.
+The `EncryptedGCSService` and the `EncryptedS3Service` do not provide an E2E encrypted solution. The file still gets encrypted by your cloud provider, and decrypted by your cloud provider. While it offers a strong protection _at rest_ it does not offer extra protection _in transit._ If you need that level of protection on S3-compatible storage, use the [ClientSideEncryptedS3Service](#clientsideencrypteds3service---s3-compatible-storage-encrypted-in-your-application), which never hands the provider anything but ciphertext.
+
+Nothing here protects you against an attacker who has your running application, since the application is what holds the keys.
 
 ## Encrypted Service implementations
 
@@ -114,6 +116,32 @@ Implementation details:
   * `x-amz-server-side-encryption-customer-key-MD5`
 
 While S3 allows the `x-amz-server-side-encryption-customer-key-MD5` to be added to the signed URL for PUT, the value of that header gets removed from the signature due to the process called "hoisting" - which occurs during the signing of the URL. So your client _may_ override the encryption key you give it forcibly, by replacing the `x-amz-server-side-encryption-customer-key` and `x-amz-server-side-encryption-customer-key-MD5`. This can produce Blobs encrypted with a key you do not have. If you want to exclude the possibility of this, you need to perform an integrity check on your uploads. The integrity check will fail if the encryption key has been overridden in this manner, and you can then destroy the Blob. This problem has been reported to AWS.
+
+### ClientSideEncryptedS3Service - S3-compatible storage, encrypted in your application
+
+Where the `EncryptedS3Service` asks S3 to encrypt for us (SSE-C), this service encrypts inside your application and hands the bucket ciphertext only. The provider never holds the plaintext, at rest or in transit, and neither does anything between you and it. If your reason for encrypting is that you do not want to trust your storage provider with the contents, this is the service to use.
+
+```yaml
+# storage.yml
+encrypted_s3:
+  service: ClientSideEncryptedS3
+  bucket: my-bucket
+  region: eu-central-1
+  private_url_policy: stream
+```
+
+Implementation details:
+
+* It uses the same encryption scheme as the `EncryptedDiskService`, and the same `block_cipher_kit` code path, rather than introducing a second scheme. The schemes only need an IO to read from, and `ClientSideEncryptedS3Service::SeekableObjectIO` gives them one backed by ranged `GET` requests. So random access - being able to serve a byte range of a large video without downloading all of it - survives the move from a local disk to a bucket.
+* Reads are buffered with a window that starts at 64 KB and doubles up to 5 MB for as long as reads stay sequential, resetting after a seek. A one-byte `download_chunk` costs one small request; a full download quickly reaches the large window.
+* Each object begins with a five byte header: the ASCII `ASEC`, then one byte of scheme version. An object in a bucket has no filename to hang a version on (which is how the `EncryptedDiskService` does it) and asking for object metadata costs a request, so the ciphertext names its own format. Reading an object without that header raises `ActiveStorageEncryption::UnknownCiphertextFormat`, which is also how a blob written by a stock `S3Service` announces itself.
+* `private_url_policy: require_headers` is refused at configuration time. A presigned URL can only ever serve ciphertext, and the client has no key. Use `stream` or `disable`.
+* Direct uploads do not go to the bucket - the browser has no key, so a `PUT` there would store plaintext. They are routed to `EncryptedBlobsController` exactly as the `EncryptedDiskService` routes them: the application receives the plaintext, encrypts it, and puts it in the bucket. No bucket CORS configuration is needed.
+* SSE-C is not used, so S3-compatible providers which do not implement it (R2, Minio, Ceph...) work with this service.
+* The checksum ActiveStorage computes is of the plaintext, so it cannot be sent to S3 as a `Content-MD5` - S3 would be checking it against our ciphertext. The plaintext is digested as it streams into the cipher instead, and the object is deleted if the digests differ.
+* `#compose` downloads, decrypts and re-encrypts, as it does for GCS: the bucket cannot splice objects it cannot read.
+
+Note what streaming decryption can and cannot promise, since it is easy to assume more. GCM verifies its authentication tag only after the whole ciphertext has been read, so a `download` which yields chunks to a block will have yielded tampered plaintext before it raises, and `download_chunk` reads a range with no authentication at all (see the note on random access below). If you need the guarantee that no altered byte reaches a caller, read the blob with the non-block form of `download`, which buffers and raises before it returns anything.
 
 ### EncryptedDiskSevice - Filesystem
 
