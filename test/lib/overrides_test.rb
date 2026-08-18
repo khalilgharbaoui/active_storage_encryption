@@ -339,6 +339,53 @@ class ActiveStorageEncryption::OverridesTest < ActiveSupport::TestCase
     end
   end
 
+  def test_blob_key_provider_is_deferred_to_the_host_app
+    recorder = Class.new do
+      attr_reader :asked
+
+      def initialize = @asked = 0
+
+      def encryption_key
+        @asked += 1
+        ActiveRecord::Encryption.key_provider.encryption_key
+      end
+
+      def decryption_keys(encrypted_message) = ActiveRecord::Encryption.key_provider.decryption_keys(encrypted_message)
+    end.new
+
+    ActiveStorageEncryption.blob_key_provider = recorder
+    blob = ActiveStorage::Blob.create!(
+      key: "deferred_provider_key",
+      filename: "test.txt",
+      byte_size: 10,
+      checksum: "abab",
+      content_type: "text/plain",
+      encryption_key: "blabla",
+      service_name: "encrypted_disk"
+    )
+
+    assert_operator recorder.asked, :>, 0
+    assert_equal "blabla", ActiveStorage::Blob.find(blob.id).encryption_key
+  ensure
+    ActiveStorageEncryption.blob_key_provider = nil
+  end
+
+  def test_blob_key_provider_defaults_to_the_application_key
+    assert_nil ActiveStorageEncryption.blob_key_provider
+
+    blob = ActiveStorage::Blob.create!(
+      key: "default_provider_key",
+      filename: "test.txt",
+      byte_size: 10,
+      checksum: "abab",
+      content_type: "text/plain",
+      encryption_key: "blabla",
+      service_name: "encrypted_disk"
+    )
+
+    assert_equal "blabla", ActiveStorage::Blob.find(blob.id).encryption_key
+  end
+
   private
 
   def with_uploadable_random_file(size = 128, &blk)

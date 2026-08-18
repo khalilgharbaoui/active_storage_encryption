@@ -8,7 +8,7 @@ module ActiveStorageEncryption
     module EncryptedBlobClassMethods
       def self.included base
         base.class_eval do
-          encrypts :encryption_key
+          encrypts :encryption_key, key_provider: ActiveStorageEncryption::DeferredBlobKeyProvider.new
           validates :encryption_key, presence: {message: "must be present for this service"}, if: :service_encrypted?
 
           class << self

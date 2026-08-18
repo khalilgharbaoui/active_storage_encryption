@@ -14,6 +14,41 @@ module ActiveStorageEncryption
   autoload :EncryptedGCSService, __dir__ + "/active_storage_encryption/encrypted_gcs_service.rb"
   autoload :Overrides, __dir__ + "/active_storage_encryption/overrides.rb"
 
+  # Key provider for the `encryption_key` column on ActiveStorage::Blob - the key
+  # that opens the file, kept encrypted in the database. Defaults to nil, meaning
+  # ActiveRecord::Encryption's own key provider, which is what every app got
+  # before this hook existed.
+  #
+  # Set it when the blob key should be sealed with something narrower than the
+  # application-wide key - a per-user key, for instance, so that destroying that
+  # one key makes that user's files unrecoverable, including from backups:
+  #
+  #   ActiveStorageEncryption.blob_key_provider = MyPerUserKeyProvider.new
+  #
+  # Assign it from an initializer. It is resolved on use rather than captured at
+  # declaration, so load order does not matter, and re-declaring
+  # `encrypts :encryption_key` in the host app would not work anyway: `encrypts`
+  # decorates, so a second declaration encrypts the value twice.
+  mattr_accessor :blob_key_provider
+
+  # Defers to ActiveStorageEncryption.blob_key_provider at the moment a key is
+  # actually needed. ActiveRecord::Encryption only duck-types this pair.
+  class DeferredBlobKeyProvider
+    def encryption_key
+      resolve.encryption_key
+    end
+
+    def decryption_keys(encrypted_message)
+      resolve.decryption_keys(encrypted_message)
+    end
+
+    private
+
+    def resolve
+      ActiveStorageEncryption.blob_key_provider || ActiveRecord::Encryption.key_provider
+    end
+  end
+
   class IncorrectEncryptionKey < ArgumentError
   end
 
